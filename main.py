@@ -88,7 +88,7 @@ class CameraEngine:
             print("Camara liberada")
 
 # ==========================================
-# 3. NIVEL 1: RITMO (CUERPO - LOGICA CORREGIDA)
+# 3. NIVEL 1: RITMO
 # ==========================================
 class LevelBody:
     def __init__(self, screen, model):
@@ -237,7 +237,7 @@ class LevelBody:
         pygame.draw.rect(self.screen, (0, 255, 0, 50), (0, 0, ACTIVATION_ZONE_X, WINDOW_HEIGHT), 2)
         pygame.draw.line(self.screen, (255, 255, 0), (PERFECT_ZONE_X, 0), (PERFECT_ZONE_X, WINDOW_HEIGHT), 4)
 
-        # 5. Actualizar Objetivos - LOGICA CORREGIDA
+        # 5. Actualizar Objetivos
         for target in self.targets[:]:
             target["x"] -= target["speed"]
             
@@ -262,7 +262,7 @@ class LevelBody:
             text_rect = pose_text.get_rect(center=rect.center)
             self.screen.blit(pose_text, text_rect)
             
-            # **LOGICA CORREGIDA: Evaluar la pose del jugador**
+            # Zona jugador
             if in_zone and not target["checked"]:
                 target["checked"] = True  # Marcar como evaluado
                 
@@ -383,7 +383,7 @@ class LevelBody:
         self.screen.blit(stats_txt, (WINDOW_WIDTH - 400, WINDOW_HEIGHT - 30))
 
 # ==========================================
-# 4. MENU PRINCIPAL (REDISENADO)
+# 4. MENU PRINCIPAL
 # ==========================================
 class MainMenu:
     def __init__(self, screen):
