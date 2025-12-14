@@ -5,23 +5,15 @@ from ultralytics import YOLO
 import sys
 import random
 import math
+import os
 
-# Intento de importar MediaPipe
-try:
-    import mediapipe as mp
-    MEDIAPIPE_AVAILABLE = True
-except ImportError:
-    MEDIAPIPE_AVAILABLE = False
-    print("ADVERTENCIA: MediaPipe no instalado. El Nivel 2 no funcionara.")
-
-# ==========================================
-# 1. CONFIGURACION GENERAL
-# ==========================================
+#CONFIGURACION GENERAL
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 CAMERA_ID = 0 
 
-# Constantes de gameplay
+# RUTA DE MUSICA 
+MUSIC_PATH = "music/background.mp3" 
 SPAWN_INTERVAL = 45  # Frames entre objetivos
 TARGET_SPEED = 9
 ACTIVATION_ZONE_X = 350
@@ -39,18 +31,7 @@ COLOR_BLACK = (0, 0, 0)
 COLOR_TEXT_DIM = (148, 163, 184)
 COLOR_GOLD = (255, 215, 0)
 
-# Colores para dedos (Nivel 2)
-FINGER_COLORS = [
-    (255, 0, 0),    # Pulgar (Rojo)
-    (0, 255, 0),    # Indice (Verde)
-    (0, 0, 255),    # Medio (Azul)
-    (255, 255, 0),  # Anular (Amarillo)
-    (255, 0, 255)   # Menique (Magenta)
-]
-
-# ==========================================
-# 2. MOTOR DE CAMARA
-# ==========================================
+#MOTOR DE CAMARA
 class CameraEngine:
     def __init__(self):
         try:
@@ -75,10 +56,7 @@ class CameraEngine:
         # Efecto Espejo
         frame = cv2.flip(frame, 1)
         
-        # Guardar RGB para procesar (MediaPipe/YOLO)
         self.last_frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Convertir para Pygame (Rotar y Transponer)
         frame_surface = np.transpose(self.last_frame_rgb, (1, 0, 2))
         return pygame.surfarray.make_surface(frame_surface)
 
@@ -87,9 +65,7 @@ class CameraEngine:
             self.cap.release()
             print("Camara liberada")
 
-# ==========================================
-# 3. NIVEL 1: RITMO
-# ==========================================
+#RITMO
 class LevelBody:
     def __init__(self, screen, model):
         self.screen = screen
@@ -221,330 +197,284 @@ class LevelBody:
             print(f"Error en inferencia YOLO: {e}")
             keypoints = []
 
-        # 2. Dibujar Esqueleto y Detectar Poses
-        current_poses = set()
-        if len(keypoints) > 0:
-            self.draw_skeleton(keypoints)
-            current_poses = self.detect_active_poses(keypoints)
+        # 2. Detectar todas las poses activas
+        active_poses = self.detect_active_poses(keypoints)
 
-        # 3. Logica de Spawn
+        # 3. Generar nuevos objetivos
         self.spawn_timer += 1
-        if self.spawn_timer > SPAWN_INTERVAL: 
+        if self.spawn_timer >= SPAWN_INTERVAL:
             self.spawn_target()
             self.spawn_timer = 0
-            
-        # 4. Dibujar Zonas de Activacion
-        pygame.draw.rect(self.screen, (0, 255, 0, 50), (0, 0, ACTIVATION_ZONE_X, WINDOW_HEIGHT), 2)
-        pygame.draw.line(self.screen, (255, 255, 0), (PERFECT_ZONE_X, 0), (PERFECT_ZONE_X, WINDOW_HEIGHT), 4)
 
-        # 5. Actualizar Objetivos
-        for target in self.targets[:]:
+        # 4. Mover y evaluar objetivos
+        to_remove = []
+        
+        for target in self.targets:
             target["x"] -= target["speed"]
             
-            color = self.pose_colors[target["type"]]
-            rect = pygame.Rect(
-                target["x"] - target["width"]//2, 
-                target["y"] - target["height"]//2,
-                target["width"], 
-                target["height"]
-            )
-
-            # Verificar si esta en la zona de activacion
-            in_zone = target["x"] <= ACTIVATION_ZONE_X and target["x"] >= 50
-            is_perfect = abs(target["x"] - PERFECT_ZONE_X) < 30
-            
-            # Dibujar el objetivo
-            pygame.draw.rect(self.screen, color, rect, border_radius=10)
-            pygame.draw.rect(self.screen, COLOR_WHITE, rect, 3, border_radius=10)
-            
-            # Texto de la pose
-            pose_text = self.small_font.render(self.pose_names[target["type"]], True, COLOR_BLACK)
-            text_rect = pose_text.get_rect(center=rect.center)
-            self.screen.blit(pose_text, text_rect)
-            
-            # Zona jugador
-            if in_zone and not target["checked"]:
-                target["checked"] = True  # Marcar como evaluado
+            # Si cruzo la zona de activacion y aun no fue checkeado
+            if target["x"] < ACTIVATION_ZONE_X and not target["checked"]:
+                target["checked"] = True
                 
-                # Verificar si el jugador esta haciendo la pose correcta
-                if target["type"] in current_poses:
+                # Verificar si la pose correcta esta activa
+                if target["type"] in active_poses:
                     # ACIERTO
-                    self.combo += 1
-                    self.max_combo = max(self.max_combo, self.combo)
-                    self.multiplier = 1 + (self.combo // 5)
-                    
-                    # Puntos extra por timing perfecto
-                    points = 100 * self.multiplier
-                    if is_perfect:
-                        points = int(points * 1.5)
-                        self.add_feedback("PERFECTO!", target["x"], target["y"] - 60, COLOR_GOLD, 40)
+                    if target["x"] > PERFECT_ZONE_X:
+                        points = 100
+                        feedback = "PERFECT!"
+                        color = COLOR_GOLD
                     else:
-                        self.add_feedback(f"+{points}", target["x"], target["y"] - 60, COLOR_ACCENT, 36)
+                        points = 50
+                        feedback = "GOOD"
+                        color = COLOR_ACCENT
                     
-                    self.score += points
+                    self.score += points * self.multiplier
+                    self.combo += 1
                     self.hits += 1
-                    self.targets.remove(target)
                     
-                    # Efecto visual de exito
-                    pygame.draw.rect(self.screen, COLOR_ACCENT, rect, 0, border_radius=10)
+                    if self.combo > self.max_combo:
+                        self.max_combo = self.combo
                     
+                    # Actualizar multiplicador
+                    if self.combo >= 20:
+                        self.multiplier = 4
+                    elif self.combo >= 10:
+                        self.multiplier = 2
+                    
+                    self.add_feedback(f"+{points * self.multiplier}", target["x"], target["y"], color)
                 else:
-                    # FALLO (pose incorrecta)
+                    # FALLO
                     self.combo = 0
                     self.multiplier = 1
                     self.misses += 1
-                    self.targets.remove(target)
-                    
-                    # Efecto visual de error
-                    center_x, center_y = rect.center
-                    offset = 40
-                    pygame.draw.line(self.screen, COLOR_DANGER, 
-                                   (center_x - offset, center_y - offset), 
-                                   (center_x + offset, center_y + offset), 10)
-                    pygame.draw.line(self.screen, COLOR_DANGER, 
-                                   (center_x - offset, center_y + offset), 
-                                   (center_x + offset, center_y - offset), 10)
-                    
-                    self.add_feedback("MISS!", target["x"], target["y"] - 60, COLOR_DANGER, 40)
-                    
-            # Eliminar objetivos que salieron de la pantalla
-            elif target["x"] < -100:
-                if not target["checked"]:
-                    self.combo = 0
-                    self.multiplier = 1
-                    self.misses += 1
-                    self.add_feedback("PERDIDO", target["x"], target["y"], COLOR_TEXT_DIM, 30)
-                self.targets.remove(target)
-
-        # 6. Actualizar y dibujar mensajes de feedback
+                    self.add_feedback("MISS!", target["x"], target["y"], COLOR_DANGER)
+            
+            # Marcar para eliminar si sale de pantalla
+            if target["x"] < -target["width"]:
+                to_remove.append(target)
+        
+        # Eliminar targets fuera de pantalla
+        for target in to_remove:
+            self.targets.remove(target)
+        
+        # 5. Actualizar mensajes de feedback
         for msg in self.feedback_messages[:]:
             msg["lifetime"] -= 1
-            msg["y"] -= 2  # Flotar hacia arriba
-            
+            msg["y"] -= 2  # Hacer que suba
             if msg["lifetime"] <= 0:
                 self.feedback_messages.remove(msg)
-            else:
-                font = pygame.font.SysFont("Arial", msg["size"], bold=True)
-                alpha = min(255, msg["lifetime"] * 8)  # Fade out
-                text_surf = font.render(msg["text"], True, msg["color"])
-                self.screen.blit(text_surf, (msg["x"] - text_surf.get_width()//2, msg["y"]))
 
-        # 7. Dibujar UI
-        self.draw_ui(current_poses)
+        # 6. Dibujar UI (ARRIBA de todo)
+        self.draw_ui(active_poses)
 
-    def draw_skeleton(self, kpts):
-        """Dibuja el esqueleto del cuerpo detectado"""
-        pairs = [(5,7), (7,9), (6,8), (8,10), (5,6), (5,11), (6,12), (11,12)]
-        
-        for s, e in pairs:
-            if kpts[s][0] != 0 and kpts[e][0] != 0:
-                s_pos = (int(kpts[s][0]), int(kpts[s][1]))
-                e_pos = (int(kpts[e][0]), int(kpts[e][1]))
-                pygame.draw.line(self.screen, COLOR_ACCENT, s_pos, e_pos, 4)
-        
-        for p in kpts:
-            if p[0] != 0:
-                pygame.draw.circle(self.screen, COLOR_WHITE, (int(p[0]), int(p[1])), 5)
-
-    def draw_ui(self, current_poses):
-        """Dibuja la interfaz de usuario"""
-        # Panel superior
+    def draw_ui(self, active_poses):
+        """Dibuja interfaz del juego"""
+        # Panel superior con estadisticas (PANEL COMPACTO Y ALTO)
         panel_height = 80
-        pygame.draw.rect(self.screen, (0, 0, 0, 200), (0, 0, WINDOW_WIDTH, panel_height))
+        panel = pygame.Surface((WINDOW_WIDTH, panel_height))
+        panel.set_alpha(200)
+        panel.fill((10, 15, 30))
+        self.screen.blit(panel, (0, 0))
         
-        # Score
+        # Linea decorativa inferior del panel
+        pygame.draw.line(self.screen, COLOR_ACCENT, (0, panel_height), (WINDOW_WIDTH, panel_height), 3)
+        
+        # Score (Izquierda)
         score_txt = self.font.render(f"SCORE: {self.score}", True, COLOR_WHITE)
         self.screen.blit(score_txt, (20, 15))
         
-        # Combo
-        combo_color = COLOR_GOLD if self.combo > 5 else COLOR_WHITE
-        combo_txt = self.font.render(f"COMBO: x{self.combo}", True, combo_color)
-        self.screen.blit(combo_txt, (WINDOW_WIDTH - 250, 15))
+        # Combo (Centro)
+        combo_color = COLOR_ACCENT if self.combo > 0 else COLOR_TEXT_DIM
+        combo_txt = self.font.render(f"COMBO: {self.combo}x", True, combo_color)
+        combo_rect = combo_txt.get_rect(center=(WINDOW_WIDTH//2, 40))
+        self.screen.blit(combo_txt, combo_rect)
         
-        # Multiplicador
-        if self.multiplier > 1:
-            mult_txt = self.small_font.render(f"Multiplicador: x{self.multiplier}", True, COLOR_GOLD)
-            self.screen.blit(mult_txt, (WINDOW_WIDTH - 250, 50))
+        # Multiplicador (Derecha)
+        mult_txt = self.font.render(f"x{self.multiplier}", True, COLOR_GOLD)
+        mult_rect = mult_txt.get_rect(right=WINDOW_WIDTH - 20, top=15)
+        self.screen.blit(mult_txt, mult_rect)
         
-        # Instrucciones
-        instr = self.small_font.render("Haz la pose cuando toque la LINEA AMARILLA", True, COLOR_TEXT_DIM)
-        self.screen.blit(instr, (WINDOW_WIDTH//2 - instr.get_width()//2, 20))
+        # Indicador de poses activas (LADO IZQUIERDO, DEBAJO DEL PANEL)
+        pose_y_start = panel_height + 20
+        for i, pose_name in enumerate(self.pose_names):
+            is_active = i in active_poses
+            color = self.pose_colors[i] if is_active else COLOR_TEXT_DIM
+            
+            # Fondo de la etiqueta de pose
+            pose_bg = pygame.Surface((200, 35))
+            pose_bg.set_alpha(180 if is_active else 100)
+            pose_bg.fill((20, 25, 40))
+            self.screen.blit(pose_bg, (10, pose_y_start + i * 40))
+            
+            # Borde lateral si está activa
+            if is_active:
+                pygame.draw.rect(self.screen, color, (10, pose_y_start + i * 40, 5, 35))
+            
+            # Texto de la pose
+            pose_txt = self.small_font.render(pose_name, True, color)
+            self.screen.blit(pose_txt, (20, pose_y_start + i * 40 + 5))
         
-        # Mostrar poses activas detectadas (para debug/feedback)
-        if current_poses:
-            poses_text = ", ".join([self.pose_names[p] for p in current_poses])
-            detected_txt = self.small_font.render(f"Detectado: {poses_text}", True, COLOR_ACCENT)
-            self.screen.blit(detected_txt, (20, panel_height + 10))
+        # Zonas de activacion (Derecha, vertical)
+        # Zona PERFECT
+        perfect_zone = pygame.Rect(PERFECT_ZONE_X, panel_height + 20, 8, WINDOW_HEIGHT - panel_height - 40)
+        pygame.draw.rect(self.screen, COLOR_GOLD, perfect_zone)
+        perfect_label = self.small_font.render("PERFECT", True, COLOR_GOLD)
+        perfect_label = pygame.transform.rotate(perfect_label, 90)
+        self.screen.blit(perfect_label, (PERFECT_ZONE_X - 30, WINDOW_HEIGHT//2 - 40))
         
-        # Estadisticas en esquina inferior derecha
-        stats_font = pygame.font.SysFont("Arial", 20)
-        accuracy = (self.hits / (self.hits + self.misses) * 100) if (self.hits + self.misses) > 0 else 0
-        stats_txt = stats_font.render(f"Precision: {accuracy:.1f}% | Max Combo: {self.max_combo}", True, COLOR_TEXT_DIM)
-        self.screen.blit(stats_txt, (WINDOW_WIDTH - 400, WINDOW_HEIGHT - 30))
+        # Zona GOOD
+        good_zone = pygame.Rect(ACTIVATION_ZONE_X, panel_height + 20, 8, WINDOW_HEIGHT - panel_height - 40)
+        pygame.draw.rect(self.screen, COLOR_ACCENT, good_zone)
+        good_label = self.small_font.render("GOOD", True, COLOR_ACCENT)
+        good_label = pygame.transform.rotate(good_label, 90)
+        self.screen.blit(good_label, (ACTIVATION_ZONE_X - 30, WINDOW_HEIGHT//2 - 20))
+        
+        # Dibujar objetivos
+        for target in self.targets:
+            color = self.pose_colors[target["type"]]
+            
+            # Sombra
+            shadow_rect = pygame.Rect(target["x"] + 5, target["y"] + 5, target["width"], target["height"])
+            shadow = pygame.Surface((target["width"], target["height"]))
+            shadow.set_alpha(80)
+            shadow.fill(COLOR_BLACK)
+            self.screen.blit(shadow, (shadow_rect.x, shadow_rect.y))
+            
+            # Target principal
+            target_rect = pygame.Rect(target["x"], target["y"], target["width"], target["height"])
+            pygame.draw.rect(self.screen, color, target_rect, border_radius=10)
+            pygame.draw.rect(self.screen, COLOR_WHITE, target_rect, 3, border_radius=10)
+            
+            # Texto del target
+            txt = self.small_font.render(self.pose_names[target["type"]], True, COLOR_BLACK)
+            txt_rect = txt.get_rect(center=target_rect.center)
+            self.screen.blit(txt, txt_rect)
+        
+        # Mensajes de feedback
+        for msg in self.feedback_messages:
+            alpha = int(255 * (msg["lifetime"] / 30))
+            feedback_font = pygame.font.SysFont("Arial", msg["size"], bold=True)
+            txt_surf = feedback_font.render(msg["text"], True, msg["color"])
+            txt_surf.set_alpha(alpha)
+            self.screen.blit(txt_surf, (msg["x"], msg["y"]))
 
-# ==========================================
-# 4. MENU PRINCIPAL
-# ==========================================
+#MENU PRINCIPAL 
 class MainMenu:
     def __init__(self, screen):
         self.screen = screen
-        self.title_font = pygame.font.SysFont("Arial", 100, bold=True)
+        self.title_font = pygame.font.SysFont("Arial", 80, bold=True)
         self.subtitle_font = pygame.font.SysFont("Arial", 28)
         self.btn_font = pygame.font.SysFont("Arial", 32, bold=True)
-        self.info_font = pygame.font.SysFont("Arial", 18)
-        
-        cx, cy = WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2
+        self.info_font = pygame.font.SysFont("Arial", 20)
         
         # Animaciones
         self.time = 0
-        self.particles = self.create_particles()
+        self.particles = []
         
-        # Botones estilizados con iconos
+        btn_width = 300
+        btn_height = 70
+        btn_spacing = 30
+        start_y = 320
+        
         self.buttons = [
             {
-                "text": "COMENZAR JUEGO",
-                "rect": pygame.Rect(cx - 250, cy + 20, 500, 80),
+                "text": "NIVEL 1: RITMO",
+                "rect": pygame.Rect(
+                    WINDOW_WIDTH // 2 - btn_width // 2,
+                    start_y,
+                    btn_width,
+                    btn_height
+                ),
                 "action": "lvl1",
-                "color": COLOR_ACCENT,
-                "icon": ">"
+                "color": COLOR_ACCENT
             },
             {
                 "text": "SALIR",
-                "rect": pygame.Rect(cx - 250, cy + 130, 500, 80),
+                "rect": pygame.Rect(
+                    WINDOW_WIDTH // 2 - btn_width // 2,
+                    start_y + btn_height + btn_spacing,
+                    btn_width,
+                    btn_height
+                ),
                 "action": "quit",
-                "color": COLOR_DANGER,
-                "icon": "X"
+                "color": COLOR_DANGER
             }
         ]
         
-        # Informacion de caracteristicas
-        self.features = [
-            "Deteccion de Poses en Tiempo Real",
-            "Sistema de Combos y Multiplicadores",
-            "Estadisticas de Rendimiento",
-            "Interfaz Cyberpunk Moderna"
-        ]
-
-    def create_particles(self):
-        """Crea particulas de fondo animadas"""
-        particles = []
+        # Inicializar particulas
         for _ in range(30):
-            particles.append({
+            self.particles.append({
                 "x": random.randint(0, WINDOW_WIDTH),
                 "y": random.randint(0, WINDOW_HEIGHT),
-                "speed": random.uniform(0.2, 1.0),
-                "size": random.randint(1, 3),
-                "alpha": random.randint(50, 150)
+                "speed": random.uniform(0.5, 2),
+                "size": random.randint(1, 3)
             })
-        return particles
 
     def draw_animated_background(self):
-        """Dibuja fondo animado con particulas y grid"""
-        # Fondo base
+        """Fondo animado con particulas"""
         self.screen.fill(COLOR_BG)
         
-        # Grid animado con perspectiva
-        grid_offset = int(self.time * 2) % 50
-        for i in range(-grid_offset, WINDOW_WIDTH, 50):
-            alpha = 40 + int(20 * math.sin(self.time * 0.02 + i * 0.01))
-            color = (30, 40, 60 + alpha)
-            pygame.draw.line(self.screen, color, (i, 0), (i, WINDOW_HEIGHT), 1)
-        
-        for i in range(-grid_offset, WINDOW_HEIGHT, 50):
-            alpha = 40 + int(20 * math.sin(self.time * 0.02 + i * 0.01))
-            color = (30, 40, 60 + alpha)
-            pygame.draw.line(self.screen, color, (0, i), (WINDOW_WIDTH, i), 1)
-        
-        # Particulas flotantes
+        # Actualizar y dibujar particulas
         for p in self.particles:
-            p["y"] -= p["speed"]
-            if p["y"] < -10:
-                p["y"] = WINDOW_HEIGHT + 10
+            p["y"] += p["speed"]
+            if p["y"] > WINDOW_HEIGHT:
+                p["y"] = 0
                 p["x"] = random.randint(0, WINDOW_WIDTH)
             
-            # Efecto de pulso
-            pulse = int(p["alpha"] * (0.7 + 0.3 * math.sin(self.time * 0.05 + p["x"])))
-            color = (67, 97, 238, pulse)  # Azul neon con transparencia
-            
-            pygame.draw.circle(self.screen, color[:3], (int(p["x"]), int(p["y"])), p["size"])
-        
-        # Lineas decorativas diagonales
-        for i in range(5):
-            start_x = -200 + int(self.time * (1 + i * 0.3)) % (WINDOW_WIDTH + 400)
-            pygame.draw.line(self.screen, (67, 97, 238, 30), 
-                           (start_x, 0), (start_x - 300, WINDOW_HEIGHT), 1)
+            alpha = int(150 + 105 * math.sin(self.time * 0.02 + p["x"]))
+            color = (*COLOR_ACCENT, alpha)
+            pygame.draw.circle(self.screen, COLOR_ACCENT, (int(p["x"]), int(p["y"])), p["size"])
 
     def draw_title_section(self):
-        """Dibuja el titulo con efectos especiales"""
+        """Dibuja el titulo con efectos (SIN superposicion)"""
+        # Titulo principal con efecto de brillo
         title_text = "NEURO RHYTHM"
         
-        # Efecto de glitch en el titulo
-        glitch_offset = int(3 * math.sin(self.time * 0.3)) if random.random() > 0.95 else 0
+        # Sombra del titulo
+        shadow_surf = self.title_font.render(title_text, True, COLOR_BLACK)
+        shadow_rect = shadow_surf.get_rect(center=(WINDOW_WIDTH//2 + 4, 120))
+        self.screen.blit(shadow_surf, shadow_rect)
         
-        # Sombra con blur simulado
-        for offset in range(5, 0, -1):
-            shadow_alpha = 50 - offset * 10
-            shadow = self.title_font.render(title_text, True, (0, 0, 0))
-            shadow.set_alpha(shadow_alpha)
-            self.screen.blit(shadow, (WINDOW_WIDTH//2 - shadow.get_width()//2 + offset, 50 + offset))
+        # Titulo con gradiente (simulado con capas)
+        title_surf = self.title_font.render(title_text, True, COLOR_ACCENT)
+        title_rect = title_surf.get_rect(center=(WINDOW_WIDTH//2, 116))
+        self.screen.blit(title_surf, title_rect)
         
-        # Titulo principal con efecto de brillo
-        glow_intensity = int(30 * (1 + math.sin(self.time * 0.1)))
-        title_color = (
-            min(255, COLOR_ACCENT[0] + glow_intensity),
-            min(255, COLOR_ACCENT[1]),
-            min(255, COLOR_ACCENT[2] + glow_intensity)
-        )
+        # Subtitulo
+        subtitle_text = "Sistema de Deteccion de Movimiento"
+        subtitle_surf = self.subtitle_font.render(subtitle_text, True, COLOR_TEXT_DIM)
+        subtitle_rect = subtitle_surf.get_rect(center=(WINDOW_WIDTH//2, 180))
+        self.screen.blit(subtitle_surf, subtitle_rect)
         
-        title = self.title_font.render(title_text, True, title_color)
-        title_x = WINDOW_WIDTH//2 - title.get_width()//2 + glitch_offset
-        self.screen.blit(title, (title_x, 50))
-        
-        # Linea decorativa debajo del titulo
-        line_y = 170
+        # Linea decorativa
         line_width = 400
-        line_x = WINDOW_WIDTH//2 - line_width//2
-        
-        # Linea principal
-        pygame.draw.line(self.screen, COLOR_ACCENT, 
-                        (line_x, line_y), (line_x + line_width, line_y), 3)
-        
-        # Puntos decorativos en los extremos
-        for x in [line_x, line_x + line_width]:
-            pygame.draw.circle(self.screen, COLOR_ACCENT, (x, line_y), 5)
-            pygame.draw.circle(self.screen, COLOR_WHITE, (x, line_y), 2)
-        
-        # Subtitulo con efecto de escritura
-        subtitle = "Arquitectura de Computadores - Proyecto Final"
-        sub_surf = self.subtitle_font.render(subtitle, True, COLOR_TEXT_DIM)
-        self.screen.blit(sub_surf, (WINDOW_WIDTH//2 - sub_surf.get_width()//2, 190))
-        
-        # Badge "YOLO v8 + OpenCV"
-        badge_text = "POWERED BY YOLO v8"
-        badge_surf = self.info_font.render(badge_text, True, COLOR_SECONDARY)
-        badge_rect = badge_surf.get_rect(center=(WINDOW_WIDTH//2, 230))
-        
-        # Fondo del badge
-        badge_bg = pygame.Rect(badge_rect.x - 10, badge_rect.y - 5, 
-                               badge_rect.width + 20, badge_rect.height + 10)
-        pygame.draw.rect(self.screen, (67, 97, 238, 30), badge_bg, border_radius=5)
-        pygame.draw.rect(self.screen, COLOR_SECONDARY, badge_bg, 2, border_radius=5)
-        
-        self.screen.blit(badge_surf, badge_rect)
+        line_y = 210
+        pygame.draw.line(
+            self.screen,
+            COLOR_SECONDARY,
+            (WINDOW_WIDTH//2 - line_width//2, line_y),
+            (WINDOW_WIDTH//2 + line_width//2, line_y),
+            3
+        )
 
     def draw_feature_cards(self):
-        """Dibuja cards de caracteristicas"""
-        start_y = WINDOW_HEIGHT - 200
-        card_width = 280
+        """Cards con caracteristicas (REPOSICIONADAS debajo de botones)"""
+        features = [
+            "Deteccion en Tiempo Real",
+            "Sistema de Combos",
+            "Multiples Poses"
+        ]
+        
+        card_width = 200
         card_height = 60
-        spacing = 20
-        total_width = len(self.features) * card_width + (len(self.features) - 1) * spacing
+        start_y = 540  # Más abajo para evitar conflicto con botones
+        spacing = 40
+        total_width = (card_width * 3) + (spacing * 2)
         start_x = (WINDOW_WIDTH - total_width) // 2
         
-        for i, feature in enumerate(self.features):
-            x = start_x + i * (card_width + spacing)
+        for i, feature in enumerate(features):
+            x = start_x + (card_width + spacing) * i
             
-            # Fondo de la card con efecto de elevacion
             card_rect = pygame.Rect(x, start_y, card_width, card_height)
             
             # Sombra
@@ -659,9 +589,7 @@ class MainMenu:
                 return btn["action"]
         return None
 
-# ==========================================
-# 5. GESTOR PRINCIPAL
-# ==========================================
+#GESTOR PRINCIPAL
 class GameManager:
     def __init__(self):
         pygame.init()
@@ -672,6 +600,11 @@ class GameManager:
         print("\n" + "="*50)
         print("NEURO RHYTHM - Sistema Iniciando...")
         print("="*50)
+        
+        # Inicializar sistema de audio
+        pygame.mixer.init()
+        self.music_loaded = False
+        self.load_music()
         
         try:
             print("Cargando Modelo YOLO...")
@@ -691,6 +624,22 @@ class GameManager:
         self.state = "MENU"
         self.menu = MainMenu(self.screen)
         self.level = None
+
+    def load_music(self):
+        """Carga y reproduce la musica de fondo"""
+        try:
+            if os.path.exists(MUSIC_PATH):
+                pygame.mixer.music.load(MUSIC_PATH)
+                pygame.mixer.music.set_volume(0.5)  # Volumen al 50%
+                pygame.mixer.music.play(-1)  # Loop infinito
+                self.music_loaded = True
+                print(f"Musica cargada: {MUSIC_PATH}")
+            else:
+                print(f"ADVERTENCIA: No se encontro el archivo de musica en: {MUSIC_PATH}")
+                print("El juego funcionara sin musica de fondo.")
+        except Exception as e:
+            print(f"Error al cargar musica: {e}")
+            print("El juego continuara sin musica de fondo.")
 
     def run(self):
         running = True
@@ -754,8 +703,15 @@ class GameManager:
     def cleanup(self):
         """Limpieza de recursos al cerrar"""
         print("\nLiberando recursos...")
+        
+        # Detener musica
+        if self.music_loaded:
+            pygame.mixer.music.stop()
+            print("Musica detenida")
+        
         if hasattr(self, 'cam'):
             self.cam.release()
+        
         pygame.quit()
         print("Limpieza completada. Hasta pronto!")
         sys.exit(0)
